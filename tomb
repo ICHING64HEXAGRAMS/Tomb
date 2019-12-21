@@ -44,8 +44,8 @@
 
 # {{{ Global variables
 
-typeset VERSION="2.6"
-typeset DATE="May/2019"
+typeset VERSION="2.7"
+typeset DATE="Oct/2019"
 typeset TOMBEXEC=$0
 typeset TMPPREFIX=${TMPPREFIX:-/tmp}
 # TODO: configure which tmp dir to use from a cli flag
@@ -245,7 +245,7 @@ _whoami() {
 	# }
 
 	# Force HOME to _USER's HOME if necessary
-	local home=$(awk -F: "/^$_USER:/ { print \$6 }" /etc/passwd 2>/dev/null)
+	local home=`_get_home $_USER`
 	[[ $home == $HOME ]] || {
 		_verbose "Updating HOME to match user's: ::1 home:: (was ::2 HOME::)" \
 				 $home $HOME
@@ -504,9 +504,9 @@ ask_password() {
 
 	# if sphinx mode is chosen, use the provided input
 	# as master password to retrieve the actual password
-	{ option_is_set --sphx-user } || { option_is_set --sphx-host } && {
+	if option_is_set --sphx-user || option_is_set --sphx-host; then
 		password=$(sphinx_get_password "$password")
-	}
+	fi
 
 	[[ "$password" = "" ]] && {
 		_warning "Empty password"
@@ -524,7 +524,7 @@ ask_password() {
 sphinx_get_password() {
 	local errorfile
 	local password
-	{ option_is_set --sphx-user && option_is_set --sphx-host } && {
+	if option_is_set --sphx-user && option_is_set --sphx-host; then
 		# value error in sphinx doesn't set exit code
 		# using tempfile as a workaround to notice the error
 		errorfile=$(mktemp /tmp/tomb_error.XXXXXXXXX)
@@ -538,9 +538,9 @@ sphinx_get_password() {
 			rm $errorfile
 			_failure "Failed to retrieve actual password with sphinx."
 		fi
-	} || {
+	else
 		_failure "Both host and user have to be set to use sphinx"
-	}
+	fi
 }
 
 # Create PASSWORD in sphinx
@@ -549,7 +549,7 @@ sphinx_get_password() {
 sphinx_set_password() {
 	local errorfile
 	local password
-	{ option_is_set --sphx-user && option_is_set --sphx-host } && {
+	if option_is_set --sphx-user && option_is_set --sphx-host; then
 		# value error in sphinx doesn't set exit code
 		# using tempfile as a workaround to notice the error
 		errorfile=$(mktemp /tmp/tomb_error.XXXXXXXXX)
@@ -572,9 +572,9 @@ sphinx_set_password() {
 			rm $errorfile
 			_failure "Failed to create password with sphinx"
 		fi
-	} || {
+	else
 		_failure "Both host and user have to be set to use sphinx"
-	}
+	fi
 }
 
 
@@ -1004,6 +1004,9 @@ _gpg_uid() {
 	gpg --with-colons --list-key "$1" |
 		awk 'BEGIN { FS=":" } /^uid/ { print $10; exit}' }
 
+# helpers to retrieve data from passwd using getent
+_get_username() { getent passwd ${1} | awk -F: '{print $1}' }
+_get_home()     { getent passwd ${1} | awk -F: '{print $6}' }
 
 # $1 is the encrypted key contents we are checking
 is_valid_key() {
@@ -1278,9 +1281,9 @@ ask_key_password() {
 
 		# if sphinx mode is chosen, use the provided input
 		# as master password to retrieve the actual password
-		{ option_is_set --sphx-user } || { option_is_set --sphx-host } && {
+		if option_is_set --sphx-user || option_is_set --sphx-host; then
 			tombpass=$(sphinx_get_password "$tombpass")
-		}
+		fi
 
 		get_lukskey "$tombpass"
 
@@ -1376,29 +1379,29 @@ gen_key() {
 	tombpasstmp=""
 
 	# remove sphinx opts not to mess with initial password prompt
-	{ option_is_set --sphx-user } && {
+	option_is_set --sphx-user && {
 		sphx_user_tmp="$(option_value --sphx-user)"
 		unset "OPTS[--sphx-user]"
 	}
-	{ option_is_set --sphx-host } && {
+	option_is_set --sphx-host && {
 		sphx_host_tmp="$(option_value --sphx-host)"
 		unset "OPTS[--sphx-host]"
 	}
 
-	{ option_is_set -g } && {
+	if option_is_set -g; then
 		gpgopt=(--encrypt)
 
-		{ option_is_set -r || option_is_set -R } && {
+		if option_is_set -r || option_is_set -R; then
 			typeset -a recipients
-			{ option_is_set -r } && {
+			if option_is_set -r; then
 				recipients=(${(s:,:)$(option_value -r)})
 				recipients_opt="--recipient"
-			} || {
+			else
 				recipients=(${(s:,:)$(option_value -R)})
 				recipients_opt="--hidden-recipient"
-			}
+			fi
 
-			{ is_valid_recipients $recipients } || {
+		    is_valid_recipients $recipients || {
 				_failure "You set an invalid GPG ID."
 			}
 
@@ -1410,15 +1413,15 @@ gen_key() {
 			done
 
 			gpgopt+=(`_recipients_arg "$recipients_opt" $recipients`)
-		} || {
+		else
 			_message "No recipient specified, using default GPG key."
 			gpgopt+=("--default-recipient-self")
-		}
+		fi
 
 		# Set gpg inputs and options
 		gpgpass="$TOMBSECRET"
 		opt=''
-	} || {
+	else 
 		if [ "$2" = "" ]; then
 			while true; do
 				# 3 tries to write two times a matching password
@@ -1447,7 +1450,7 @@ gen_key() {
 
 		# if sphinx mode is chosen, use the provided input
 		# as master password to generate the actual password
-		if [[ $sphx_host_tmp ]] || [[ $sphx_user_tmp ]]; then 
+		if [[ "$sphx_host_tmp" != "" ]] || [[ "$sphx_user_tmp" != "" ]]; then 
 			OPTS[--sphx-user]=$sphx_user_tmp
 			OPTS[--sphx-host]=$sphx_host_tmp
 			unset sphx_user_tmp
@@ -1493,7 +1496,7 @@ gen_key() {
 		gpgpass="${tombpass}\n$TOMBSECRET"
 		gpgopt=(--passphrase-fd 0 --symmetric --no-options)
 		opt='-n'
-	}
+	fi
 
 	_tmp_create
 	local tmpres=$TOMBTMP
@@ -1997,8 +2000,7 @@ forge_key() {
 		_warning "Dumping contents to screen:"
 		print "${mapfile[$TOMBKEY]}"
 		_warning "--"
-		_sudo umount ${keytmp}
-		rm -r $keytmp
+		rm -f ${TOMBKEYFILE}
 		_failure "Operation aborted."
 	}
 
@@ -2014,7 +2016,7 @@ forge_key() {
 #
 # Lock the given tomb with the given key file, in fact formatting the
 # loopback volume as a LUKS device.
-# Default cipher 'aes-xts-plain64:sha256'can be overridden with -o
+# Default cipher 'aes-xts-plain64'can be overridden with -o
 lock_tomb_with_key() {
 	# old default was aes-cbc-essiv:sha256
 	# Override with -o
@@ -2193,14 +2195,15 @@ change_tomb_key() {
 # {{{ Open
 
 _update_control_file() {
-	# replaces a control file with new contents and gives it user ownership
+	# make sure a control file exists, gives it user ownership
+	# and replaces it with new contents
 	# stdin = contents
 	# $1 = path to control file
 	# $2 = contents
 	[[ "$2" = "" ]] && return 1
 	_sudo touch "$1"
-	print "$2" > "$1"
 	_sudo chown ${_UID}:${_GID} "$1"
+	print "$2" > "$1"
 	_verbose "updated control file $1 = $2"
 }
 
@@ -2337,8 +2340,7 @@ mount_tomb() {
 		tomblast=$(_cat ${tombmount}/.last)
 		tombuid=$(_cat ${tombmount}/.uid | tr -d ' ')
 
-		tombuser=$(getent passwd $tombuid)
-		tombuser=${tombuser[(ws@:@)1]}
+		tombuser=`_get_username $tombuid`
 
 		_message "Last visit by ::1 user::(::2 tomb build::) from ::3 tty:: on ::4 host::" $tombuser $tombuid $tombtty $tombhost
 		_message "on date ::1 date::" $tombsince
@@ -2512,8 +2514,7 @@ awk "/mapper/"' { print $2 ";" $3 ";" $4 ";" $5 }'`
 			tombhost=$(_cat ${tombmount}/.host)
 			tombuid=$(_cat ${tombmount}/.uid | tr -d ' ')
 
-			tombuser=$(getent passwd $tombuid)
-			tombuser=${tombuser[(ws@:@)1]}
+			tombuser=`_get_username $tombuid`
 		}
 
 		{ option_is_set --get-mountpoint } && { print $tombmount; continue }
@@ -3007,8 +3008,7 @@ list_processes() {
 				_verbose "process found: $pnum"
 				puid=$(_cat /proc/${pnum}/loginuid)
 				pcmd=$(_cat /proc/${pnum}/cmdline)
-				powner=$(getent passwd $puid)
-				powner=${powner[(ws@:@)1]}
+				powner=`_get_username $puid`
 				_verbose "process found: $pnum $pcmd ($powner)"
 				_message "::1 tombname:: ::2 cmd:: (::3 owner::)" \
 						 $tombname $pcmd $powner
@@ -3049,8 +3049,7 @@ slam_tomb() {
 		for pnum in ${(f)"$(_sudo lsof -t +D $tombmount)"}; do
 			puid=$(_cat /proc/${pnum}/loginuid)
 			pcmd=$(_cat /proc/${pnum}/cmdline)
-			powner=$(getent passwd $puid)
-			powner=${powner[(ws@:@)1]}
+			powner=`_get_username $puid`
 			_verbose "process found: $pnum $pcmd ($powner)"
 			# iterate through 3 different signals to send, break on success
 			for s in TERM HUP KILL; do
